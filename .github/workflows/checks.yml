@@ -146,11 +146,23 @@ jobs:
               sys.exit("manifest has no bulk input hash")
 
           lock = m["environment_lock"]
-          for key in ("scipy", "anndata", "numpy", "pandas"):
+
+          # These decide every number this run reports, so a null here is a
+          # real defect: scipy computes the statistics, and python/numpy/pandas
+          # define the arithmetic underneath them.
+          for key in ("python", "numpy", "pandas", "scipy", "seed"):
               if lock.get(key) is None:
                   sys.exit(f"environment lock is missing {key}")
 
-          print("manifest hashes", len(m["outputs"]), "outputs; lock:", sorted(lock))
+          # anndata/h5py are only imported for .h5ad input and matplotlib only
+          # for figures, so a null is legitimate when that path is unused. The
+          # lock must still MODEL them, so record what this run had.
+          print("required lock keys present:", {k: lock[k] for k in ("python", "numpy", "pandas", "scipy", "seed")})
+          print("optional for this input:",
+                {k: lock.get(k) for k in ("anndata", "h5py", "matplotlib")})
+          for key in ("anndata", "h5py", "matplotlib"):
+              if key not in lock:
+                  sys.exit(f"environment lock does not model {key}")
           PY
 
   windows:
