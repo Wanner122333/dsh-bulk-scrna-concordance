@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Bulk–scRNA Concordance",
+    "description": "Compares bulk RNA-seq with scRNA pseudo-bulk expression and reports correlation plus a discriminability assessment."
+  }
+}

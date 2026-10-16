@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Bulk–scRNA 表达一致性分析",
+    "description": "比较 bulk RNA-seq 与 scRNA pseudo-bulk 表达，报告相关系数并给出判别度评估。"
+  }
+}

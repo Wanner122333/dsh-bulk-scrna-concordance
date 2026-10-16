@@ -1,0 +1,29 @@
+{
+  "name": "@local/dsh-bulk-scrna-concordance",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bulk RNA-seq vs scRNA-seq pseudo-bulk concordance analysis, exposed as an agent tool.",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "meta": {
+    "title": "Bulk–scRNA Concordance",
+    "description": "Compares bulk RNA-seq with scRNA pseudo-bulk expression and reports correlation plus a discriminability assessment."
+  },
+  "files": [
+    "index.js",
+    "python/",
+    "locale/*.json",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dependencies": {},
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

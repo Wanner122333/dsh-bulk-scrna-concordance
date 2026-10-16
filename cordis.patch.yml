@@ -1,0 +1,14 @@
+# Bundle patch: inserts this plugin's Host row.
+#
+# `pythonPath` defaults to `python` on PATH. The analysis needs an interpreter
+# with anndata, h5py, scipy, pandas, numpy and matplotlib; the one bundled with
+# the Harness has only numpy and pandas, so set an absolute path here (or
+# override this row by `id` in your profile's own cordis.patch.yml) when the
+# default is wrong.
+- insert:
+    - id: bulk-scrna-concordance
+      name: '@local/dsh-bulk-scrna-concordance'
+      config:
+        pythonPath: python
+        defaultTimeoutMs: 1800000
+        maxLogLines: 40

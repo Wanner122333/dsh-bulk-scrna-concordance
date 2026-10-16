@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Analysis outputs (this plugin writes them next to your data, but they can be
+# pointed inside the repo with out_dir)
+*_bulk_scrna_correlation.png
+*_bulk_scrna_correlation.pdf
+*_bulk_scrna_correlation.svg
+*_bulk_scrna_correlation_stats.csv
+*_discriminability.csv
+*_results.json
+*_manifest.json
+*_run.log
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
