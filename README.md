@@ -8,6 +8,11 @@ a TBtools Java GUI shell. This bundle replaces both: the numerics live in a
 readable Python script inside the package, and the Harness registers a tool the
 agent can call directly.
 
+- Full parameter reference, input formats and interpretation: **[docs/usage.md](docs/usage.md)**
+- Runnable input fixtures: **[examples/synthetic/](examples/synthetic/)** (600 genes × 6 cells, disjoint group markers)
+- Survey of the neighbouring DSH plugin ecosystem: [docs/github-survey.md](docs/github-survey.md)
+- CI runs the analysis on those fixtures on Linux and Windows: [.github/workflows/checks.yml](.github/workflows/checks.yml)
+
 ---
 
 ## What it adds

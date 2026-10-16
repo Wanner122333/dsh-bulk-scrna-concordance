@@ -1,0 +1,176 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: JavaScript syntax
+        run: |
+          set -euo pipefail
+          cp index.js /tmp/index.mjs
+          node --check /tmp/index.mjs
+
+      - name: Host layer imports nothing outside node builtins
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re, pathlib, sys
+          src = pathlib.Path("index.js").read_text(encoding="utf-8")
+          # Anchor to line-start so prose inside a template literal cannot be
+          # mistaken for an import statement. A quote is appended to the
+          # searched text so this script can name the builtin prefix literally.
+          pfx = "node" + ":"
+          bad = [m for m in
+                 re.findall(r"(?m)^\s*(?:import|export)[^\n]*?from\s+['\"]([^'\"]+)['\"]", src)
+                 if not m.startswith(pfx)]
+          if bad:
+              sys.exit("index.js must only import builtins, found " + repr(bad))
+          print("all imports are builtins")
+          PY
+
+      - name: Python syntax
+        run: |
+          set -euo pipefail
+          python -m py_compile python/bulk_scrna_concordance.py
+
+      - name: Manifest, exports and locales
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, sys
+
+          pkg = json.loads(pathlib.Path("package.json").read_text(encoding="utf-8"))
+          patch = pkg.get("dsh", {}).get("bundle", {}).get("patch")
+          if not patch:
+              sys.exit("package.json does not declare dsh.bundle.patch")
+          if not pathlib.Path(patch).is_file():
+              sys.exit(f"bundle patch {patch} does not exist")
+
+          for target in pkg.get("exports", {}).values():
+              if "*" in target:
+                  continue
+              if not pathlib.Path(target).is_file():
+                  sys.exit(f"exports target {target} does not exist")
+
+          for f in ("locale/en.json", "locale/zh.json"):
+              meta = json.loads(pathlib.Path(f).read_text(encoding="utf-8")).get("meta", {})
+              if not meta.get("title"):
+                  sys.exit(f"{f} has no meta.title")
+
+          print("manifest ok; bundle patch:", patch)
+          PY
+
+      - name: Bundle patch row names match the package
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyyaml
+          python - <<'PY'
+          import json, pathlib, sys
+          import yaml
+
+          pkg = json.loads(pathlib.Path("package.json").read_text(encoding="utf-8"))
+          doc = yaml.safe_load(pathlib.Path("cordis.patch.yml").read_text(encoding="utf-8"))
+          rows = [e for item in doc if isinstance(item, dict) for e in item.get("insert", [])]
+          if not rows:
+              sys.exit("cordis.patch.yml inserts no rows")
+          for row in rows:
+              if row.get("name") != pkg["name"]:
+                  sys.exit(f"row name {row.get('name')!r} != package name {pkg['name']!r}")
+              if not row.get("id"):
+                  sys.exit("every inserted row needs an id")
+          print("row/package names agree:", [r["id"] for r in rows])
+          PY
+
+      - name: Analysis runs on the synthetic fixture
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy pandas scipy matplotlib
+          python python/bulk_scrna_concordance.py \
+            --sc-matrix-csv examples/synthetic/sc_expr.csv \
+            --sc-meta-csv examples/synthetic/sc_meta.csv \
+            --bulk-csv examples/synthetic/bulk.csv \
+            --group-col Group \
+            --discriminability \
+            --out-dir /tmp/out --out-prefix ci \
+            --results-json /tmp/out/ci_results.json
+          python - <<'PY'
+          import json, pathlib, sys
+
+          r = json.loads(pathlib.Path("/tmp/out/ci_results.json").read_text(encoding="utf-8"))
+          if r["status"] != "ok":
+              sys.exit(f"status {r['status']}")
+
+          d = r["discriminability"]
+          # The fixture gives the two groups disjoint marker sets, so the gap
+          # must be large and every group must best-match its own bulk samples.
+          if d["gap"] is None or d["gap"] < 1.0:
+              sys.exit(f"gap too small for this fixture: {d['gap']}")
+          if d["n_correct"] != d["n_groups"]:
+              sys.exit(f"expected every match correct, got {d['n_correct']}/{d['n_groups']}")
+
+          print("groups:", {g: round(s["pearson_r"], 4) for g, s in r["pairs"].items()})
+          print("gap:", round(d["gap"], 4), "correct:", f"{d['n_correct']}/{d['n_groups']}")
+          PY
+
+      - name: Manifest hashes every output and pins the versions that matter
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, sys
+
+          m = json.loads(pathlib.Path("/tmp/out/ci_manifest.json").read_text(encoding="utf-8"))
+
+          missing = [k for k, v in m["outputs"].items()
+                     if not v.get("exists") or not v.get("sha256")]
+          if missing:
+              sys.exit(f"manifest entries without a hash: {missing}")
+          if not m["produced_by"].get("script_sha256"):
+              sys.exit("manifest has no script hash")
+          if not m["inputs"].get("bulk_csv", {}).get("sha256"):
+              sys.exit("manifest has no bulk input hash")
+
+          lock = m["environment_lock"]
+          for key in ("scipy", "anndata", "numpy", "pandas"):
+              if lock.get(key) is None:
+                  sys.exit(f"environment lock is missing {key}")
+
+          print("manifest hashes", len(m["outputs"]), "outputs; lock:", sorted(lock))
+          PY
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Analysis runs on Windows too
+        shell: pwsh
+        run: |
+          python -m pip install --quiet numpy pandas scipy matplotlib
+          python python/bulk_scrna_concordance.py `
+            --sc-matrix-csv examples/synthetic/sc_expr.csv `
+            --sc-meta-csv examples/synthetic/sc_meta.csv `
+            --bulk-csv examples/synthetic/bulk.csv `
+            --group-col Group --discriminability `
+            --out-dir "$env:RUNNER_TEMP\out" --out-prefix ci `
+            --results-json "$env:RUNNER_TEMP\out\ci_results.json"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Content "$env:RUNNER_TEMP\out\ci_bulk_scrna_correlation_stats.csv"
