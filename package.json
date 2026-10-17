@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Bulk RNA-seq vs scRNA-seq pseudo-bulk concordance analysis, exposed as an agent tool.",
+  "description": "Bulk and single-cell expression concordance for DSH and MCP clients.",
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
@@ -11,14 +11,17 @@
   },
   "meta": {
     "title": "Bulk–scRNA Concordance",
-    "description": "Compares bulk RNA-seq with scRNA pseudo-bulk expression and reports correlation plus a discriminability assessment."
+    "description": "Compare bulk expression with single-cell pseudo-bulk profiles and check group matching."
   },
   "files": [
     "index.js",
     "python/",
     "locale/*.json",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "docs/",
+    "requirements.txt",
+    "requirements-mcp.txt"
   ],
   "dependencies": {},
   "dsh": {
@@ -27,3 +30,4 @@
     }
   }
 }
+

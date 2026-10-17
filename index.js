@@ -1,26 +1,6 @@
 /**
- * Bulk–scRNA concordance analysis — DSH Host plugin.
- *
- * Registers one agent-callable tool, `bulk_scrna_concordance`, that runs a
- * local Python analysis script and returns a structured, size-bounded result.
- *
- * Two decisions worth knowing about:
- *
- * 1. The computation stays in Python. The original tool is Python (anndata /
- *    h5py / scipy); reading `.h5ad` in Node would mean a second, differently
- *    behaved implementation of the same statistics. The plugin is the thin,
- *    contract-owning layer; the script owns the numerics.
- *
- * 2. Child stdout goes to a log FILE, not a pipe. The Harness file sandbox
- *    denies piped stdio to child processes (`spawnSync ... EPERM`), while
- *    `stdio: 'inherit'` and fd redirection both work. Redirecting to a file
- *    keeps the output readable for diagnostics without any pipe.
- *
- * 3. This plugin imports NOTHING outside `node:`. A Host-only bundle needs no
- *    dependencies, and declaring one would make the install require the npm
- *    registry. The tool definition is therefore a plain registry-ready object
- *    with JSON Schema parameters, plus the local argument check that
- *    `defineTool` would otherwise supply.
+ * DSH interface for bulk–single-cell expression concordance.
+ * Runs the Python analysis and returns statistics, warnings and output paths.
  *
  * @module @local/dsh-bulk-scrna-concordance
  */
@@ -160,6 +140,7 @@ function runScript(argv, { pythonPath, timeoutMs, logPath, cwd }) {
 		try {
 			child = spawn(pythonPath, argv, {
 				cwd,
+				env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
 				stdio: ['ignore', logFd, logFd],
 				windowsHide: true,
 			});
@@ -211,6 +192,7 @@ async function readTail(file, maxLines) {
 
 export function apply(ctx, config = {}) {
 	const { pythonPath, defaultTimeoutMs, maxLogLines } = resolveConfig(config);
+	const activeRuns = new Set();
 
 	const parameters = {
 		type: 'object',
@@ -228,6 +210,14 @@ export function apply(ctx, config = {}) {
 			sc_meta_csv: {
 				type: 'string',
 				description: 'Cell metadata for sc_matrix_csv; first column is the cell ID and must include the group column.',
+			},
+			sc_layer: {
+				type: 'string',
+				description: "Named AnnData layer containing raw counts. By default use layers['counts'], otherwise X.",
+			},
+			sc_use_raw: {
+				type: 'boolean',
+				description: 'Explicitly use AnnData raw.X and raw.var. Values must be raw counts. Exclusive with sc_layer.',
 			},
 			bulk_csv: {
 				type: 'string',
@@ -277,7 +267,7 @@ export function apply(ctx, config = {}) {
 			},
 			no_manifest: {
 				type: 'boolean',
-				description: 'Skip manifest.json. By default every run writes one: input and output SHA-256 hashes, parameters, seed, and a pinned environment lock, so a published figure can be traced back to exact inputs.',
+				description: 'Skip the manifest containing input/output hashes, parameters and installed dependency versions.',
 			},
 			no_figure: {
 				type: 'boolean',
@@ -384,10 +374,11 @@ export function apply(ctx, config = {}) {
 					}
 					const d = value.discriminability;
 					if (d !== undefined) {
+						const numberOrNA = (value) => Number.isFinite(value) ? value.toFixed(4) : 'NA';
 						lines.push(
-							`  discriminability: matched=${(d.matched_mean_r ?? 0).toFixed(4)}`
-							+ ` mismatched=${(d.mismatched_mean_r ?? 0).toFixed(4)}`
-							+ ` gap=${(d.gap ?? 0).toFixed(4)}`
+							`  discriminability: matched=${numberOrNA(d.matched_mean_r)}`
+							+ ` mismatched=${numberOrNA(d.mismatched_mean_r)}`
+							+ ` gap=${numberOrNA(d.gap)}`
 							+ ` correct=${d.n_correct ?? 0}/${d.n_groups ?? 0}`,
 						);
 						if ((d.misassigned ?? []).length > 0) {
@@ -433,10 +424,19 @@ export function apply(ctx, config = {}) {
 			if (hasMatrix && (typeof args.sc_meta_csv !== 'string' || args.sc_meta_csv.trim() === '')) {
 				throw new Error('sc_matrix_csv requires sc_meta_csv');
 			}
+			if (args.sc_layer !== undefined && args.sc_layer !== null) {
+				requireNonEmpty(args.sc_layer, 'sc_layer');
+				if (args.sc_use_raw === true) throw new Error('sc_layer and sc_use_raw are mutually exclusive');
+			}
+			if (hasMatrix && (args.sc_layer != null || args.sc_use_raw === true)) {
+				throw new Error('sc_layer and sc_use_raw require sc_h5ad');
+			}
 
-			const prefix = typeof args.out_prefix === 'string' && args.out_prefix.trim() !== ''
-				? args.out_prefix.trim()
-				: 'bulk_scrna_concordance';
+			const prefix = args.out_prefix == null ? 'bulk_scrna_concordance'
+				: requireNonEmpty(args.out_prefix, 'out_prefix').trim();
+			if (prefix === '.' || prefix === '..' || /[/\\:\0]/.test(prefix)) {
+				throw new Error('out_prefix must be a filename prefix without path separators');
+			}
 			const resultsJson = path.join(outDir, `${prefix}_results.json`);
 			const logPath = path.join(outDir, `${prefix}_run.log`);
 
@@ -452,6 +452,8 @@ export function apply(ctx, config = {}) {
 				'--results-json', resultsJson];
 			if (hasH5ad) {
 				argv.push('--sc-h5ad', resolvePath(args.sc_h5ad, cwd));
+				if (args.sc_layer != null) argv.push('--sc-layer', args.sc_layer.trim());
+				if (args.sc_use_raw === true) argv.push('--sc-use-raw');
 			} else {
 				argv.push('--sc-matrix-csv', resolvePath(args.sc_matrix_csv, cwd));
 				argv.push('--sc-meta-csv', resolvePath(args.sc_meta_csv, cwd));
@@ -479,100 +481,118 @@ export function apply(ctx, config = {}) {
 			if (args.no_figure === true) argv.push('--no-figure');
 
 			const timeoutMs = Number.isFinite(args.timeout_ms) ? args.timeout_ms : defaultTimeoutMs;
-
-			let outcome;
+			const outputTarget = process.platform === 'win32' ? resultsJson.toLowerCase() : resultsJson;
+			if (activeRuns.has(outputTarget)) {
+				return { status: 'failed', groups: [], warnings: [],
+					message: 'An analysis is already running with this output directory and prefix.' };
+			}
+			activeRuns.add(outputTarget);
 			try {
-				outcome = await runScript(argv, { pythonPath, timeoutMs, logPath, cwd });
-			} catch (error) {
-				return {
-					status: 'failed',
-					message: `could not start the analysis interpreter (${pythonPath}): ${error.message}`,
-					groups: [],
-					warnings: [
-						'Set pythonPath in this plugin row to an interpreter that has anndata, h5py, scipy, pandas, numpy and matplotlib.',
-					],
-					log_tail: [],
-				};
-			}
+				await fs.rm(resultsJson, { force: true });
 
-			const { lines, total } = await readTail(logPath, maxLogLines);
+				let outcome;
+				try {
+					outcome = await runScript(argv, { pythonPath, timeoutMs, logPath, cwd });
+				} catch (error) {
+					return {
+						status: 'failed',
+						message: `could not start the analysis interpreter (${pythonPath}): ${error.message}`,
+						groups: [],
+						warnings: [
+							'Set pythonPath in this plugin row to an interpreter that has anndata, h5py, scipy, pandas, numpy and matplotlib.',
+						],
+						log_tail: [],
+					};
+				}
 
-			if (outcome.signal !== null) {
-				return {
-					status: 'killed',
-					message: `analysis killed after ${timeoutMs} ms (raise timeout_ms for large inputs)`,
-					groups: [],
-					warnings: [],
+				const { lines, total } = await readTail(logPath, maxLogLines);
+
+				if (outcome.signal !== null) {
+					return {
+						status: 'killed',
+						message: `analysis killed after ${timeoutMs} ms (raise timeout_ms for large inputs)`,
+						groups: [],
+						warnings: [],
+						log_tail: lines,
+					};
+				}
+				if (outcome.code !== 0) {
+					return {
+						status: 'failed',
+						message: `analysis exited with code ${outcome.code}`,
+						groups: [], warnings: [], log_tail: lines,
+					};
+				}
+
+				let parsed;
+				try {
+					parsed = JSON.parse(await fs.readFile(resultsJson, 'utf8'));
+				} catch {
+					return {
+						status: 'failed',
+						message: `analysis exited with code ${outcome.code} and wrote no result file`,
+						groups: [],
+						warnings: [],
+						log_tail: lines,
+					};
+				}
+
+				if (parsed.schema !== RESULTS_SCHEMA || parsed.status !== 'ok') {
+					return {
+						status: 'failed',
+						message: `invalid analysis result: schema=${String(parsed.schema)}, status=${String(parsed.status)}`,
+						groups: [],
+						warnings: [],
+						log_tail: lines,
+					};
+				}
+
+				const groups = Object.entries(parsed.pairs ?? {}).map(([group, s]) => ({
+					group,
+					n_cells: s.n_cells,
+					n_genes_used: s.n_genes_used,
+					pearson_r: s.pearson_r,
+					spearman_rho: s.spearman_rho,
+					slope: s.slope,
+					intercept: s.intercept,
+				}));
+
+				const value = {
+					status: 'ok',
+					n_cells: parsed.scrna?.n_cells,
+					n_genes_unique: parsed.scrna?.n_genes_unique,
+					groups,
+					warnings: [...(parsed.warnings ?? [])],
+					results_json: resultsJson,
+					manifest_json: parsed.outputs?.manifest_json ?? undefined,
+					stats_csv: parsed.outputs?.stats_csv ?? undefined,
+					figure_png: parsed.outputs?.figures?.[0],
+					figure_pdf: parsed.outputs?.figures?.[1],
 					log_tail: lines,
 				};
+
+				if (parsed.discriminability !== null && parsed.discriminability !== undefined) {
+					const d = parsed.discriminability;
+					value.discriminability = {
+						...(Number.isFinite(d.matched_mean_r) ? { matched_mean_r: d.matched_mean_r } : {}),
+						...(Number.isFinite(d.mismatched_mean_r) ? { mismatched_mean_r: d.mismatched_mean_r } : {}),
+						...(Number.isFinite(d.gap) ? { gap: d.gap } : {}),
+						n_groups: d.n_groups,
+						n_correct: d.n_correct,
+						misassigned: Object.entries(d.best_match ?? {})
+							.filter(([, info]) => info.correct !== true)
+							.map(([group, info]) => `${group}->${info.best_bulk_group}`),
+					};
+				}
+
+				if (total > lines.length && lines.length > 0) {
+					value.warnings.push(`log truncated to the last ${lines.length} of ${total} lines; full log at ${logPath}`);
+				}
+
+				return value;
+			} finally {
+				activeRuns.delete(outputTarget);
 			}
-
-			let parsed;
-			try {
-				parsed = JSON.parse(await fs.readFile(resultsJson, 'utf8'));
-			} catch {
-				return {
-					status: 'failed',
-					message: `analysis exited with code ${outcome.code} and wrote no result file`,
-					groups: [],
-					warnings: [],
-					log_tail: lines,
-				};
-			}
-
-			if (parsed.schema !== RESULTS_SCHEMA) {
-				return {
-					status: 'failed',
-					message: `unexpected result schema ${String(parsed.schema)}; expected ${RESULTS_SCHEMA}`,
-					groups: [],
-					warnings: [],
-					log_tail: lines,
-				};
-			}
-
-			const groups = Object.entries(parsed.pairs ?? {}).map(([group, s]) => ({
-				group,
-				n_cells: s.n_cells,
-				n_genes_used: s.n_genes_used,
-				pearson_r: s.pearson_r,
-				spearman_rho: s.spearman_rho,
-				slope: s.slope,
-				intercept: s.intercept,
-			}));
-
-			const value = {
-				status: 'ok',
-				n_cells: parsed.scrna?.n_cells,
-				n_genes_unique: parsed.scrna?.n_genes_unique,
-				groups,
-				warnings: [...(parsed.warnings ?? [])],
-				results_json: resultsJson,
-				manifest_json: parsed.outputs?.manifest_json ?? undefined,
-				stats_csv: parsed.outputs?.stats_csv ?? undefined,
-				figure_png: parsed.outputs?.figures?.[0],
-				figure_pdf: parsed.outputs?.figures?.[1],
-				log_tail: lines,
-			};
-
-			if (parsed.discriminability !== null && parsed.discriminability !== undefined) {
-				const d = parsed.discriminability;
-				value.discriminability = {
-					matched_mean_r: d.matched_mean_r,
-					mismatched_mean_r: d.mismatched_mean_r,
-					gap: d.gap,
-					n_groups: d.n_groups,
-					n_correct: d.n_correct,
-					misassigned: Object.entries(d.best_match ?? {})
-						.filter(([, info]) => info.correct !== true)
-						.map(([group, info]) => `${group}->${info.best_bulk_group}`),
-				};
-			}
-
-			if (total > lines.length && lines.length > 0) {
-				value.warnings.push(`log truncated to the last ${lines.length} of ${total} lines; full log at ${logPath}`);
-			}
-
-			return value;
 		},
 	};
 
@@ -580,3 +600,4 @@ export function apply(ctx, config = {}) {
 	// removes the tool with it.
 	ctx.effect(() => ctx.tools.register(tool));
 }
+

@@ -1,0 +1,4 @@
+-r requirements.txt
+# Official MCP Python SDK v1; v2 has a different server API.
+mcp>=1.26,<2
+

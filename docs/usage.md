@@ -1,189 +1,192 @@
 # Usage
 
-The plugin registers one tool, `bulk_scrna_concordance`. Everything below is
-also reachable from the shell by calling the analysis script directly — useful
-for scripting and for reproducing a figure outside the Harness.
+The DSH and MCP tool is `bulk_scrna_concordance`. See [MCP setup](mcp.md) for
+ChatGPT and Claude connections. The same analysis is available as a Python CLI:
 
 ```bash
 python python/bulk_scrna_concordance.py --help
 ```
 
-## What it computes
+## Analysis
 
-For each group:
+For each group, the tool:
 
-1. sum single-cell counts across that group's cells → one pseudo-bulk profile;
-2. scale both sides (default CPM), take `log2(x + 1)`;
-3. over the genes present and positive on both sides, compute Pearson `r`,
-   Spearman `rho`, and a least-squares fit `y = slope·x + intercept`.
+1. Sums single-cell raw counts across cells and averages bulk expression across
+   the samples assigned to that group.
+2. Intersects gene IDs and excludes genes that are zero on both sides.
+3. Applies the selected normalization to each vector, then retains genes
+   positive on both sides and applies `log2(x+1)`.
+4. Computes Pearson `r`, Spearman `rho` and an ordinary least-squares fit
+   `pseudo = slope * bulk + intercept`.
 
-`r` answers "do these two look like the same transcriptome". It does **not**
-answer "is this the right match" — see [Discriminability](#discriminability).
+The figure uses the same genes and transformed values as the statistics:
+bulk on the x-axis and pseudo-bulk on the y-axis. A pair needs at least three
+retained genes.
 
-## Inputs
+## Single-cell inputs
 
-Two ways to supply the single-cell side.
-
-### `.h5ad` (preferred for real data)
-
-```bash
-python python/bulk_scrna_concordance.py \
-  --sc-h5ad scRNA.h5ad \
-  --bulk-csv bulk_FPKM.csv \
-  --group-col Group \
-  --out-dir results --out-prefix my_run
-```
-
-- Gene IDs are read from a `var` column (`gene_symbols`, `symbol`, `gene_name`,
-  … in that order) or fall back to `var.index`; override with `--gene-id-key`.
-- `adata.raw` is used when present, otherwise `adata.X`. **Pseudo-bulk sums the
-  matrix as-is**, so if `.X` holds normalized or log-transformed values rather
-  than counts, the pseudo-bulk is wrong. Check this first on a new dataset.
-- Cells whose group label is missing (`nan`, `NA`, `none`, …) are excluded and
-  reported, rather than being analysed as their own group.
-
-### Expression CSV + metadata CSV
+### AnnData (`.h5ad`)
 
 ```bash
 python python/bulk_scrna_concordance.py \
-  --sc-matrix-csv sc_expr.csv --sc-meta-csv sc_meta.csv \
-  --bulk-csv bulk.csv \
+  --sc-h5ad scRNA.h5ad --sc-layer counts \
+  --bulk-csv bulk.csv --group-col Group \
   --out-dir results --out-prefix my_run
 ```
 
-- `sc_expr.csv` — genes as rows, cells as columns, first column is the gene ID.
-- `sc_meta.csv` — first column is the cell ID, and one column holds the group.
-- A path ending in `.tsv`/`.txt` is read as tab-separated; **anything else is
-  read as comma-separated**, whatever its extension says.
+The default matrix is `adata.layers['counts']` when present, otherwise
+`adata.X`. Use `--sc-layer <name>` for a named layer or `--sc-use-raw`
+to request `adata.raw.X` explicitly. These options are mutually exclusive,
+apply only to `.h5ad` input, and fail if the requested source is absent.
+The default never selects `.raw` implicitly.
 
-### Bulk matrix
+Gene IDs are read from the selected matrix's metadata: `adata.var` for
+`X`/layers, or `adata.raw.var` for explicit `.raw` selection. Automatic
+selection tries recognized columns such as `gene_symbols`, `symbol` and
+`gene_name`, then falls back to the gene index. Override it with
+`--gene-id-key`. Gene lengths use that same metadata.
 
-Genes as rows, samples as columns, first column is the gene ID. Values may be
-TPM/FPKM/CPM/counts — any continuous expression measure.
+### Expression CSV and cell metadata
 
-Samples are assigned to groups by **exact delimited token** match on the sample
-name, not by substring. With groups `A` and `B`, both `A_1` and `Rtan_A_rep1`
-map to `A`. Samples that match no group are listed in the log and in
-`bulk.unmatched_samples`; they are never silently dropped.
+```bash
+python python/bulk_scrna_concordance.py \
+  --sc-matrix-csv sc_counts.csv --sc-meta-csv sc_meta.csv \
+  --bulk-csv bulk.csv --group-col Group \
+  --out-dir results --out-prefix my_run
+```
+
+- Expression: raw counts, genes as rows, cells as columns; the first column is
+  the gene ID.
+- Metadata: the first column is the cell ID; `--group-col` identifies the
+  group column.
+- `.tsv` and `.txt` files are tab-separated; other extensions are read as CSV.
+
+Both input routes require finite, nonnegative, integer-valued raw counts
+before aggregation. Validation catches common normalized/log-transformed
+matrices but cannot prove that integer-valued data are untransformed. Confirm
+the source provenance; a `counts` layer name or `.raw` label is not sufficient.
+
+Cells with missing group labels such as `nan`, `NA` and `none` are
+excluded and reported by default.
+
+## Bulk input
+
+Genes are rows and samples are columns. The first column is the gene ID unless
+`--bulk-gene-col` selects another column. Values may be nonnegative continuous
+expression measures such as counts, CPM, TPM or FPKM. Choose normalization with
+the units and prior processing in mind; applying CPM to FPKM does not turn it
+into raw-count CPM.
+
+Samples are assigned by exact delimited group tokens. With groups `A` and
+`B`, both `A_1` and `sample_A_rep1` match `A`. Unmatched sample names
+are reported in the log and `bulk.unmatched_samples`. Use unambiguous names
+containing only the intended group token.
 
 ## Parameters
 
-| Tool argument | CLI flag | Default | Meaning |
+| Tool argument (DSH and MCP) | CLI flag | Default | Meaning |
 |---|---|---|---|
 | `sc_h5ad` | `--sc-h5ad` | — | AnnData input; exactly one of this or `sc_matrix_csv` |
-| `sc_matrix_csv` | `--sc-matrix-csv` | — | genes × cells matrix |
-| `sc_meta_csv` | `--sc-meta-csv` | — | required with `sc_matrix_csv` |
-| `bulk_csv` | `--bulk-csv` | — | **required** |
-| `out_dir` | `--out-dir` | — | **required**; created if absent |
-| `out_prefix` | `--out-prefix` | `bulk_scrna_concordance` | output filename prefix |
-| `group_col` | `--group-col` | `Group` | metadata column holding the group |
-| `gene_id_key` | `--gene-id-key` | `auto` | `.h5ad` var column, or `auto` / `var_names` |
-| `strip_version` | `--strip-version` / `--no-strip-version` | **off** | drop the suffix after the first `.` |
-| `gene_id_case` | `--gene-to-upper` / `--gene-to-lower` | keep | case-normalize gene IDs |
-| `normalize` | `--normalize` | `cpm` | `cpm` \| `tpm` \| `none` |
-| `sc_lengths_col` | `--sc-lengths-col` | — | `.h5ad` var column of gene length (tpm) |
-| `bulk_lengths_col` | `--bulk-lengths-col` | — | bulk column of gene length (tpm) |
-| `discriminability` | `--discriminability` | off | also compute the full matrix |
-| `no_figure` | `--no-figure` | off | tables only |
-| `no_manifest` | `--no-manifest` | off | skip `manifest.json` |
-| `timeout_ms` | — | plugin setting | kill the child after N ms |
+| `sc_layer` | `--sc-layer` | — | Named raw-count layer; excludes `sc_use_raw` |
+| `sc_use_raw` | `--sc-use-raw` | off | Explicitly select `raw.X` and `raw.var`; excludes `sc_layer` |
+| `sc_matrix_csv` | `--sc-matrix-csv` | — | Raw-count genes × cells matrix |
+| `sc_meta_csv` | `--sc-meta-csv` | — | Required with `sc_matrix_csv` |
+| `bulk_csv` | `--bulk-csv` | — | Required bulk expression matrix |
+| `bulk_gene_col` (MCP only) | `--bulk-gene-col` | first column | Bulk gene-ID column |
+| `out_dir` | `--out-dir` | — | Required output directory; created if absent |
+| `out_prefix` | `--out-prefix` | `bulk_scrna_concordance` | Output filename prefix |
+| — | `--results-json` | off | Results-JSON path; DSH and MCP supply this automatically |
+| `group_col` | `--group-col` | `Group` | Cell metadata group column |
+| `gene_id_key` | `--gene-id-key` | `auto` | AnnData gene-ID column or `var_names` |
+| `strip_version` | `--strip-version` / `--no-strip-version` | off | Drop the suffix after the first `.` |
+| `gene_id_case` | `--gene-to-upper` / `--gene-to-lower` | keep | Normalize gene-ID case |
+| `normalize` | `--normalize` | `cpm` | `cpm`, `tpm` or `none` |
+| `sc_lengths_col` | `--sc-lengths-col` | — | Selected AnnData gene metadata column for TPM |
+| `bulk_lengths_col` | `--bulk-lengths-col` | — | Bulk gene-length column for TPM; removed from expression |
+| `discriminability` | `--discriminability` | off | Compute all pseudo-bulk × bulk group comparisons |
+| `keep_missing_groups` (MCP only) | `--keep-missing-groups` | off | Retain missing group labels |
+| `no_figure` | `--no-figure` | off | Write tables without figures |
+| `no_manifest` | `--no-manifest` | off | Skip the provenance manifest |
+| `timeout_ms` | — | 1800000 | Child-process timeout in milliseconds; configurable in DSH |
 
-`strip_version` defaults to off. Turn it on only when IDs genuinely carry a
-version suffix; it truncates at the first `.`, so `ENSG00000141510.17` becomes
-`ENSG00000141510` — but so would a gene literally named `AT1G01010.1`. IDs that
-collapse onto each other are summed and reported, never silently dropped.
+`strip_version` truncates at the first period, so use it only when that suffix
+is a version identifier. IDs that become identical are summed on both the
+single-cell and bulk sides and reported.
 
 ## Normalization
 
-| Value | What it does | When |
-|---|---|---|
-| `cpm` | `x / sum(x) · 1e6` | default; comparable to the historical numbers |
-| `tpm` | divides by gene length first | when length bias matters; needs both length columns |
-| `none` | passes values through | inputs already on a common scale |
-
-Scale affects the fitted `slope`, barely affects `r`/`rho`. Whatever you pick is
-recorded in the results JSON and the manifest.
-
-## Discriminability
-
-Pass `--discriminability` and the run also correlates **every** pseudo-bulk group
-against **every** bulk group, then reports:
-
-- `matched_mean_r` — mean r of each group against its own bulk samples;
-- `mismatched_mean_r` — mean r against the others;
-- `gap` — the difference;
-- `n_correct / n_groups` — how often a pseudo-bulk group's best-matching bulk
-  group is its own.
-
-**Read this before quoting an r.** Any two transcriptomes from the same
-experiment correlate strongly, so a high `r` on its own is not evidence that
-bulk and single-cell agree — it is largely a statement that both are plant (or
-human, or whatever) transcriptomes. What carries information is the gap, and
-whether the intended pairing actually wins.
-
-Two very different outcomes on two real inputs:
-
-| Input | matched | mismatched | gap | correct |
-|---|---|---|---|---|
-| Synthetic markers, `examples/synthetic/` | 0.9925 | −0.7784 | **1.7709** | 2/2 |
-| The authors' Rheum dataset | 0.8781 | 0.8213 | **0.0568** | 2/3 |
-
-In the second, `pseudo-L1` best-matches `bulk-L2`, not its own samples. A run
-like that should not be reported as "bulk and scRNA agree"; the tool says so in
-its warnings rather than leaving it to the reader.
-
-## Outputs
-
-| File | Content |
+| Mode | Operation before log transform |
 |---|---|
-| `<prefix>_manifest.json` | script hash, input/output SHA-256, params, seed, environment lock |
-| `<prefix>_results.json` | full result object, schema `dsh.bulk-scrna-concordance/1` |
-| `<prefix>_bulk_scrna_correlation_stats.csv` | one row per group |
-| `<prefix>_discriminability.csv` | pseudo × bulk Pearson matrix (with the flag) |
-| `<prefix>_bulk_scrna_correlation.{png,pdf,svg}` | density scatter, regression and y=x lines |
-| `<prefix>_run.log` | full stdout/stderr of the child process |
+| `cpm` | Divide each vector by its sum and multiply by 1e6 |
+| `tpm` | Divide by gene length, then scale the rates to sum to 1e6 |
+| `none` | Leave values unchanged |
 
-The figure is a file on disk. A tool result cannot carry a picture — Harness
-production adapters declare text-only assistant output, so only user messages
-hold images — which is why the tool prints the path and a Markdown image
-reference and says that showing it as a card needs a separate `present` call.
+Scaling uses the shared genes positive on at least one side, before the final
+both-positive filter. Different pairs can therefore use different gene sets
+and denominators.
 
-## Reproducing a published figure
+CPM scaling followed by `log2(x+1)` can change Pearson `r`, slope and
+intercept when the denominator changes. For an unchanged gene set, positive
+scalar scaling followed by a strictly increasing log transform preserves ranks
+and Spearman `rho`, apart from numerical precision. TPM divides by
+gene-specific lengths and can change ranks and both correlations. Results
+from different modes are not interchangeable.
 
-`<prefix>_manifest.json` is written to be the only file a reader needs:
+TPM requires `--sc-lengths-col` and `--bulk-lengths-col` with finite,
+positive lengths. When normalized IDs merge, all lengths for the same ID must
+agree; otherwise the run fails. The single-cell length column comes from
+`raw.var` when `--sc-use-raw` is selected. Lengths must describe comparable
+features and use consistent units. Do not apply length normalization again to
+inputs already corrected for gene length.
 
-```jsonc
-{
-  "produced_by": { "script_sha256": "...", "seed": 42 },
-  "command":     { "argv": [ /* the exact invocation */ ] },
-  "inputs": {
-    "sc_h5ad":  { "bytes": 720779019, "sha256": "9e2f70e5..." },
-    "bulk_csv": { "bytes": 4641941,   "sha256": "d3979353..." }
-  },
-  "environment_lock": {
-    "python": "3.13.7", "scipy": "1.16.1", "anndata": "0.12.2",
-    "numpy": "2.2.6", "pandas": "2.3.2", "h5py": "3.14.0", "matplotlib": "3.10.6"
-  },
-  "summary": { "L1": { "pearson_r": 0.8726, ... } },
-  "outputs": { "....png": { "sha256": "c8271e23..." } }
-}
+## Group-matching diagnostics
+
+With `--discriminability`, every pseudo-bulk group is compared with every
+bulk group:
+
+- `matched_mean_r`: mean Pearson r for groups with the same label.
+- `mismatched_mean_r`: mean Pearson r for different labels.
+- `gap`: matched mean minus mismatched mean.
+- `n_correct / n_groups`: groups whose best-matching bulk group has the
+  expected label.
+
+The gap and best match flag unexpected pairings. A high correlation or positive
+gap does not prove biological agreement. This analysis pools cells and
+averages bulk samples by group; it does not estimate sample-to-sample
+variation. Correlation p-values across genes do not provide inference across
+independent biological replicates.
+
+## Outputs and provenance
+
+| File | Contents |
+|---|---|
+| `<prefix>_results.json` | Schema `dsh.bulk-scrna-concordance/1`; parameters, statistics, diagnostics, warnings and environment; CLI requires `--results-json` |
+| `<prefix>_bulk_scrna_correlation_stats.csv` | One row per group |
+| `<prefix>_discriminability.csv` | Pseudo-bulk × bulk Pearson matrix, when requested |
+| `<prefix>_bulk_scrna_correlation.{png,pdf,svg}` | Scatter plots with regression and y=x lines |
+| `<prefix>_manifest.json` | Script/input/output hashes, command, timestamps and versions |
+| `<prefix>_run.log` | Child stdout/stderr when called through DSH or MCP |
+
+The `environment_lock` field records versions, including Python, NumPy,
+pandas, SciPy, AnnData, h5py and Matplotlib. It is not an installable dependency
+lockfile. Reproducing a run requires the actual inputs and code plus a
+compatible runtime; recorded versions alone do not guarantee byte-identical
+figures across fonts, platforms or rendering environments.
+
+## Checks and failures
+
+Run from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+node --check index.js
 ```
 
-`scipy` and `anndata` are in the lock because they decide the numbers: anndata
-controls how `.X`/`.raw` are read, scipy computes every statistic. Recording
-only numpy/pandas would miss both.
+The tests use synthetic inputs. They check numerical and input-handling
+behavior rather than biological validity.
 
-With the same inputs and the same environment the PNG is byte-identical across
-runs, so `outputs.*.sha256` is a real check, not decoration. (PDF and SVG embed
-timestamps and will differ.)
+The CLI exits with code 0 on success and 1 on analysis failure; argument-parser
+errors can exit with code 2. In DSH, failed or timed-out runs return a structured
+`failed` or `killed` result with the log tail. MCP reports a tool error with
+diagnostics; each call writes to a new subdirectory within `out_dir`.
 
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | analysis completed |
-| 1 | failed; the reason is the `[ERROR]` line in the log |
-
-Inside the Harness the tool never throws for these: it returns a result object
-with `status: "failed"` or `"killed"` plus the log tail, so a bad path or a
-missing interpreter is a readable message rather than a stack trace.
