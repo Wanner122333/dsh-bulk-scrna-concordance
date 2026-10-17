@@ -568,45 +568,62 @@ def correlate_pair(a, b, normalize="cpm", lengths_a=None, lengths_b=None):
 def make_figure(pseudo_df, bulk_group_expr, groups, pairs, out_png, out_pdf, out_svg,
                 normalize="cpm", lengths_a=None, lengths_b=None):
     n = len(groups)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5), dpi=150)
-    if n == 1:
-        axes = [axes]
-    im_for_cbar = None
-    density_norm = LogNorm(vmin=1, vmax=10)
-    density_max = 10
-    for i, g in enumerate(groups):
-        ax = axes[i]
+    prepared = {
+        g: prepare_pair(pseudo_df[g], bulk_group_expr[g], normalize,
+                        lengths_a, lengths_b)
+        for g in groups
+    }
+    # A common extent makes a hexagon cover the same expression area in every
+    # panel. Leave room above the largest observed value; do not clip at 14.
+    hi = max(max(x.max(), y.max()) for x, y in prepared.values()) * 1.03
+    extent = (0.0, hi, 0.0, hi)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n + 0.65, 4.1), dpi=150,
+                             sharex=True, sharey=True, squeeze=False,
+                             layout="constrained")
+    axes = axes.ravel()
+    fig.set_facecolor("white")
+    density_norm = LogNorm(vmin=1, vmax=2)
+    density_max = 1
+    density_plots = []
+    for ax, g in zip(axes, groups):
         st = pairs[g]
-        x, y = prepare_pair(pseudo_df[g], bulk_group_expr[g], normalize,
-                            lengths_a, lengths_b)
-
-        H, xe, ye = np.histogram2d(x, y, bins=200)
-        H = H.T
-        H[H < 1] = 0
-        extent = [xe[0], xe[-1], ye[0], ye[-1]]
-        density_max = max(density_max, H.max())
-        im = ax.imshow(H, origin="lower", extent=extent, cmap="Blues",
-                       norm=density_norm, aspect="auto")
-        im_for_cbar = im
-        lo, hi = min(x.min(), y.min()), max(x.max(), y.max())
-        ax.plot([lo, hi], [lo, hi], linestyle="--", color="gray", linewidth=1)
-        xx = np.linspace(lo, hi, 100)
-        ax.plot(xx, st["slope"] * xx + st["intercept"], color="#345B7E", linewidth=1.2)
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
+        x, y = prepared[g]
+        ax.set_facecolor("white")
+        ax.set_axisbelow(True)
+        ax.grid(True, color="#E5E5E5", linewidth=0.5)
+        density = ax.hexbin(x, y, gridsize=70, extent=extent, mincnt=1,
+                            cmap="viridis", norm=density_norm, linewidths=0,
+                            zorder=2)
+        density_plots.append(density)
+        density_max = max(density_max, int(density.get_array().max()))
+        ax.plot([0, hi], [0, hi], linestyle="--", color="#BDBDBD",
+                linewidth=1, zorder=3)
+        xx = np.linspace(0, hi, 100)
+        ax.plot(xx, st["slope"] * xx + st["intercept"], color="#3D82B9",
+                linewidth=1.2, zorder=4)
+        ax.set_xlim(0, hi)
+        ax.set_ylim(0, hi)
+        ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel("log2(Bulk RNA-seq expression + 1)", fontsize=8)
-        ax.set_ylabel("log2(Pseudo-bulk scRNA-seq expression + 1)", fontsize=8)
-        ax.set_title("Group %s" % g, fontsize=10)
+        ax.set_title(str(g), fontsize=10)
         ax.tick_params(labelsize=8)
-    density_norm.vmax = density_max
-    plt.subplots_adjust(right=0.9)
-    if im_for_cbar is not None:
-        cax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-        cb = fig.colorbar(im_for_cbar, cax=cax)
-        cb.set_label("Gene count", fontsize=8)
-        cb.ax.tick_params(labelsize=8)
-    # Deliberately no tight_layout(): the manually placed colorbar axes is not
-    # compatible with it.
+    axes[0].set_ylabel("log2(Pseudo-bulk scRNA-seq expression + 1)", fontsize=8)
+    # Two is only a nondegenerate fallback when every occupied bin contains a
+    # single gene. Otherwise the upper color limit is the actual pooled maximum.
+    density_norm.vmax = max(2, density_max)
+    ticks = [1]
+    decade = 10
+    while decade < density_max * 0.65:
+        ticks.append(decade)
+        decade *= 10
+    if density_max > 1:
+        ticks.append(density_max)
+    cb = fig.colorbar(density_plots[-1], ax=list(axes), ticks=ticks,
+                      fraction=0.035, pad=0.025, aspect=25)
+    cb.set_label("Number of genes", fontsize=8)
+    cb.set_ticklabels([str(value) for value in ticks])
+    cb.ax.minorticks_off()
+    cb.ax.tick_params(labelsize=8)
     saved = []
     for path, fmt in ((out_png, "png"), (out_pdf, "pdf"), (out_svg, "svg")):
         try:

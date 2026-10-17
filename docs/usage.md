@@ -23,6 +23,20 @@ The figure uses the same genes and transformed values as the statistics:
 bulk on the x-axis and pseudo-bulk on the y-axis. A pair needs at least three
 retained genes.
 
+The default figure uses purple-to-blue/green-to-yellow (`viridis`) hexagonal
+density bins on a white background with light gray grid lines. Each occupied
+hexagon represents its number of retained genes; empty bins remain white and
+single-gene bins remain visible. Panels share the same axes, hexagon extent and
+logarithmic color scale. The shared **Number of genes** colorbar extends from
+one to the largest occupied-bin count across all panels. If every bin has one
+gene, the scale uses two as a nondegenerate upper bound and labels only one.
+The solid blue line is the ordinary least-squares fit; the gray dashed line is
+`y=x`. Axis labels include the applied `log2(expression + 1)` transformation.
+
+This styling is used by the CLI, DSH and MCP routes and by all three figure
+formats (PNG, PDF and SVG). Output names, transformed values, correlation
+statistics and the results-JSON schema are unchanged.
+
 ## Single-cell inputs
 
 ### AnnData (`.h5ad`)
@@ -163,7 +177,7 @@ independent biological replicates.
 | `<prefix>_results.json` | Schema `dsh.bulk-scrna-concordance/1`; parameters, statistics, diagnostics, warnings and environment; CLI requires `--results-json` |
 | `<prefix>_bulk_scrna_correlation_stats.csv` | One row per group |
 | `<prefix>_discriminability.csv` | Pseudo-bulk × bulk Pearson matrix, when requested |
-| `<prefix>_bulk_scrna_correlation.{png,pdf,svg}` | Scatter plots with regression and y=x lines |
+| `<prefix>_bulk_scrna_correlation.{png,pdf,svg}` | Hexagonal gene-density plots with regression, y=x lines and a shared colorbar |
 | `<prefix>_manifest.json` | Script/input/output hashes, command, timestamps and versions |
 | `<prefix>_run.log` | Child stdout/stderr when called through DSH or MCP |
 

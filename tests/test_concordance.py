@@ -70,6 +70,35 @@ class StatisticsAndFigureTests(unittest.TestCase):
         self.assertAlmostEqual(stats["slope"], expected.slope)
         self.assertAlmostEqual(stats["intercept"], expected.intercept)
 
+    def test_hexbin_preserves_gene_counts_and_density_scale_across_groups(self):
+        # Five coincident B genes must retain count 5; singleton A bins must
+        # use the same color scale rather than being independently stretched.
+        genes = ["g%d" % i for i in range(8)]
+        pseudo = pd.DataFrame({"A": [1, 4, 16, 64, 0, 0, 0, 0],
+                               "B": [1, 1, 1, 1, 1, 4, 16, 64]}, index=genes)
+        bulk = {"A": pd.Series([2, 4, 8, 32, 0, 0, 0, 0], index=genes),
+                "B": pd.Series([2, 2, 2, 2, 2, 4, 8, 32], index=genes)}
+        pairs = {g: c.correlate_pair(pseudo[g], bulk[g], normalize="none") for g in ("A", "B")}
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            paths = [str(Path(directory) / ("density." + ext)) for ext in ("png", "pdf", "svg")]
+            with patch.object(c.plt, "close", wraps=c.plt.close) as close_spy:
+                c.make_figure(pseudo, bulk, ["A", "B"], pairs, *paths, normalize="none")
+            fig = close_spy.call_args.args[0]
+            axes = fig.axes[:2]
+            self.assertEqual(len(axes[0].collections), 1, "Gene density must be represented by a hexbin collection")
+            self.assertEqual(len(axes[1].collections), 1)
+            first, second = [ax.collections[0] for ax in axes]
+            self.assertEqual(float(first.get_array().sum()), 4)
+            self.assertEqual(float(second.get_array().sum()), 8)
+            self.assertEqual(float(second.get_array().max()), 5)
+            self.assertTrue(np.all(first.get_array() >= 1))
+            self.assertTrue(np.all(second.get_array() >= 1))
+            self.assertIs(first.norm, second.norm)
+            self.assertGreaterEqual(first.norm.vmax, 5)
+            self.assertEqual(axes[0].get_xlim(), axes[1].get_xlim())
+            self.assertEqual(axes[0].get_ylim(), axes[1].get_ylim())
+            np.testing.assert_allclose(first.get_paths()[0].vertices, second.get_paths()[0].vertices)
+
     def test_figure_and_stats_share_normalization_population_and_fit(self):
         # Singleton zeros count toward each library, but do not become plotted
         # points. The intentionally different totals expose early filtering.
@@ -90,7 +119,18 @@ class StatisticsAndFigureTests(unittest.TestCase):
             try:
                 self.assertEqual(set(saved), set(paths))
                 ax = fig.axes[0]
-                np.testing.assert_allclose(ax.images[0].get_extent(), [x.min(), x.max(), y.min(), y.max()])
+                self.assertEqual(len(ax.collections), 1)
+                density = ax.collections[0]
+                self.assertEqual(float(density.get_array().sum()), 4)
+                # The actual occupied hexagons must contain all four
+                # independently transformed points, including both extremes.
+                centers = np.asarray(density.get_offsets())
+                vertices = density.get_paths()[0].vertices
+                radii = np.max(np.abs(vertices), axis=0) + 1e-8
+                for point in np.column_stack((x, y)):
+                    self.assertTrue(np.any(np.all(np.abs(centers - point) <= radii, axis=1)))
+                self.assertGreater(density.norm.vmax, density.norm.vmin)
+                self.assertTrue(np.all(density.get_array() > 0))
                 fitted_line = ax.lines[1]
                 np.testing.assert_allclose(
                     fitted_line.get_ydata(),
