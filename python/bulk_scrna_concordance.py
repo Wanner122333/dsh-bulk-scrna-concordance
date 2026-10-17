@@ -1,50 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-Bulk vs scRNA pseudo-bulk concordance analysis (DSH Harness edition).
+"""Compare bulk expression with count-based single-cell pseudo-bulk profiles.
 
-Derived from the author's TBtools plugin source `bulk_scrna_correlation_cli.py`
-(which is byte-identical to the EXE inside the original .plugin package), with
-the defects found during code review fixed and a discriminability assessment
-added.
-
-Fixed relative to the original
------------------------------
-1. `--strip_version` was `action="store_true", default=True`, so it could never
-   be turned off. Now `--strip-version / --no-strip-version` (default: off,
-   matching the original argparse author intent that the flag be optional).
-2. Gene IDs collapsing to duplicates after version stripping crashed the
-   original with
-       ValueError: operands could not be broadcast together with shapes (n,) (m,)
-   because `.loc[common_genes, g]` returned a DataFrame for a duplicated label.
-   Duplicate IDs are now collapsed explicitly (values summed) and reported.
-3. `infer_bulk_group()` matched sample names with loose `startswith`/`endswith`
-   /substring tests, so groups that are prefixes of one another (L1 vs L10) were
-   silently mis-assigned. Matching now uses exact underscore/dot/space-delimited
-   tokens, and unmatched samples are reported instead of silently dropped.
-4. The `nan` group (cells whose group label is missing) was treated as a real
-   group and given its own pseudo-bulk column. It is now excluded and reported.
-
-Added relative to the original
-------------------------------
-5. Discriminability matrix: every pseudo-bulk group against every bulk group,
-   with matched-vs-mismatched summary. A single r value cannot show that a
-   correlation is meaningful; this can.
-6. `--results-json`: one machine-readable result object, so a caller does not
-   have to scrape stdout.
-7. Run provenance recorded in the JSON (parameters, input paths, versions).
-8. CPM normalization is computed over the genes actually used in the
-   correlation (the shared, informative set) instead of over the whole shared
-   gene list as in the original. Pearson r and Spearman rho are unchanged by
-   this, but the fitted regression `slope`/`intercept` are on a different scale
-   than the original outputs; a linear rescaling of either axis changes the
-   slope while leaving r identical.
-
-Note on stdout/stdio
---------------------
-This script prints progress to stdout. The DSH sandbox denies piped stdio to
-child processes, so the caller runs it with inherited stdio and reads the JSON
-result file instead of parsing stdout.
+The CLI, DSH plugin and MCP server share this analysis implementation.
+Results describe group-level expression agreement; they are not tests of
+biological replicate concordance.
 """
 
 import argparse
@@ -99,11 +59,10 @@ def format_p(p):
 
 
 def normalize_gene_ids(values, strip_version=False, to_upper=False, to_lower=False):
-    """Normalize gene IDs and collapse duplicates.
+    """Normalize IDs without losing their positional mapping to expression.
 
-    Returns (ids, n_collapsed) where ids is a list of unique strings, in first
-    appearance order, and n_collapsed counts how many input IDs were merged
-    into an existing one.
+    Returns one ID per input and the number of duplicates. Expression values
+    are collapsed by the consumer, using this full positional mapping.
     """
     out = []
     seen = {}
@@ -118,7 +77,6 @@ def normalize_gene_ids(values, strip_version=False, to_upper=False, to_lower=Fal
             g = g.lower()
         if g in seen:
             n_collapsed += 1
-            continue
         seen[g] = len(out)
         out.append(g)
     return out, n_collapsed
@@ -129,6 +87,8 @@ def collapse_matrix_by_gene(X, gene_ids):
 
     X is cells x genes. Returns (X_collapsed, unique_ids).
     """
+    if X.ndim != 2 or X.shape[1] != len(gene_ids):
+        raise ValueError("Gene IDs must match the matrix's gene columns.")
     order = []
     index_of = {}
     for g in gene_ids:
@@ -173,8 +133,7 @@ def infer_bulk_group(sample_name, groups):
     """Return the group a bulk sample belongs to, using exact token matching.
 
     A sample matches group `g` when `g` appears as a whole token, or when the
-    name equals `g`. This replaces the original loose substring tests, which
-    mapped 'L10_a' onto group 'L1'.
+    name equals `g`. For example, 'L10_a' must not match group 'L1'.
     """
     tokens = tokenize_sample_name(sample_name)
     token_set = set(tokens)
@@ -259,7 +218,8 @@ def environment_lock():
 # Input loading
 # --------------------------------------------------------------------------
 
-def load_scrna_from_h5ad(path, group_col, gene_id_key, lengths_col=None):
+def load_scrna_from_h5ad(path, group_col, gene_id_key, lengths_col=None,
+                         layer=None, use_raw=False):
     if ad is None:
         raise RuntimeError(
             "anndata is required to read .h5ad files but is not importable by "
@@ -269,14 +229,28 @@ def load_scrna_from_h5ad(path, group_col, gene_id_key, lengths_col=None):
     log("[INFO] Reading h5ad: %s" % path)
     adata = ad.read_h5ad(path)
 
-    if adata.raw is not None:
-        log("[INFO] Using adata.raw.X / adata.raw.var")
+    if layer is not None and use_raw:
+        raise ValueError("Choose either a named sc layer or sc-use-raw, not both.")
+    if layer is not None:
+        if layer not in adata.layers:
+            raise ValueError("sc-layer=%r not found in adata.layers." % layer)
+        X, var = adata.layers[layer], adata.var.copy()
+        matrix_source = "layers[%r]" % layer
+    elif use_raw:
+        if adata.raw is None:
+            raise ValueError("sc-use-raw requested but adata.raw is absent.")
         X = adata.raw.X
         var = adata.raw.var.copy()
+        matrix_source = "raw.X"
+    elif "counts" in adata.layers:
+        X, var = adata.layers["counts"], adata.var.copy()
+        matrix_source = "layers['counts']"
     else:
-        log("[INFO] adata.raw is None; using adata.X / adata.var")
         X = adata.X
         var = adata.var.copy()
+        matrix_source = "X"
+    log("[INFO] scRNA matrix source: %s" % matrix_source)
+    validate_count_matrix(X)
 
     obs = adata.obs.copy()
     if group_col not in obs.columns:
@@ -331,7 +305,7 @@ def load_scrna_from_h5ad(path, group_col, gene_id_key, lengths_col=None):
         )
         log("[INFO] scRNA gene lengths from var['%s']" % lengths_col)
 
-    return X, chosen, group_series, used, lengths
+    return X, chosen, group_series, used, lengths, matrix_source
 
 
 def load_scrna_from_csv(expr_path, meta_path, group_col):
@@ -372,7 +346,9 @@ def load_scrna_from_csv(expr_path, meta_path, group_col):
 
     expr_df = expr_df[common]
     meta_df = meta_df.loc[common]
-    return expr_df.T.values, expr_df.index.astype(str).tolist(), meta_df[group_col], "csv"
+    X = expr_df.T.to_numpy(dtype=np.float64)
+    validate_count_matrix(X)
+    return X, expr_df.index.astype(str).tolist(), meta_df[group_col], "csv"
 
 
 def load_bulk(path, gene_col):
@@ -394,9 +370,43 @@ def load_bulk(path, gene_col):
 # Core computation
 # --------------------------------------------------------------------------
 
+def validate_count_matrix(X):
+    """Require finite, nonnegative, integer-valued single-cell counts.
+
+    These checks reject common transformed inputs, but cannot establish data
+    provenance. The operator must select the actual raw-count source.
+    """
+    values = X.data if sparse.issparse(X) else np.asarray(X)
+    values = np.asarray(values, dtype=np.float64)
+    if (not np.isfinite(values).all() or (values < 0).any()
+            or not np.allclose(values, np.rint(values), atol=1e-6, rtol=0)):
+        raise ValueError(
+            "Single-cell input must contain finite, nonnegative integer counts; "
+            "select a raw-count layer instead of normalized/log-transformed data.")
+
+
+def collapse_gene_lengths(lengths, gene_ids):
+    """Align lengths to normalized IDs, rejecting conflicting annotations."""
+    if lengths is None:
+        return None
+    values = np.asarray(lengths, dtype=np.float64)
+    if len(values) != len(gene_ids):
+        raise ValueError("Gene lengths must match the input gene IDs.")
+    if not np.isfinite(values).all() or (values <= 0).any():
+        raise ValueError("Gene lengths must be finite and positive.")
+    frame = pd.DataFrame({"gene": gene_ids, "length": values})
+    grouped = frame.groupby("gene", sort=False)["length"]
+    if (grouped.nunique() > 1).any():
+        raise ValueError("Duplicate normalized gene IDs have conflicting gene lengths.")
+    return grouped.first()
+
+
 def compute_pseudo_bulk(X, gene_ids, group_series, exclude_missing=True):
     """Sum counts per group, after collapsing duplicate gene IDs."""
+    validate_count_matrix(X)
     labels = group_series.astype(str)
+    if len(labels) != X.shape[0]:
+        raise ValueError("Group labels must match the matrix's cell rows.")
     groups = sorted(set(labels.tolist()))
 
     excluded = []
@@ -476,11 +486,13 @@ def aggregate_bulk_by_group(bulk_df, groups, unmatched_report=True):
 def normalize_values(values, method, gene_lengths=None):
     """Scale one expression vector to a fixed library size.
 
-    `cpm` is the historical behaviour and the default. `tpm` divides by gene
-    length first, which changes what the numbers mean (and therefore the fitted
-    slope) but leaves Pearson/Spearman rank agreement essentially intact.
+    `cpm` is the default. `tpm` divides by gene length first. Scaling before
+    log2(x+1) can change Pearson correlation; length division can change ranks.
     `none` passes values through, for inputs already on a common scale.
     """
+    values = np.asarray(values, dtype=np.float64)
+    if not np.isfinite(values).all() or (values < 0).any():
+        raise ValueError("Expression values must be finite and nonnegative.")
     if method == "none":
         return values
     if method == "cpm":
@@ -489,19 +501,26 @@ def normalize_values(values, method, gene_lengths=None):
     if method == "tpm":
         if gene_lengths is None:
             raise ValueError("tpm normalization requires gene lengths")
+        gene_lengths = np.asarray(gene_lengths, dtype=np.float64)
+        if (gene_lengths.shape != values.shape or not np.isfinite(gene_lengths).all()
+                or (gene_lengths <= 0).any()):
+            raise ValueError("TPM gene lengths must match expression and be finite and positive.")
         rate = values / gene_lengths
         total = rate.sum()
         return rate / total * 1e6 if total > 0 else rate
     raise ValueError("unknown normalization method %r" % (method,))
 
 
-def correlate_pair(a, b, normalize="cpm", lengths_a=None, lengths_b=None):
-    """Normalize, log2(x+1), then Pearson/Spearman/regression."""
+def prepare_pair(a, b, normalize="cpm", lengths_a=None, lengths_b=None):
+    """Return plot/statistic vectors with x=bulk (b), y=pseudo-bulk (a)."""
     idx = a.index.intersection(b.index)
     x = np.asarray(a.loc[idx].values, dtype=np.float64).ravel()
     y = np.asarray(b.loc[idx].values, dtype=np.float64).ravel()
     la = None if lengths_a is None else np.asarray(lengths_a.loc[idx].values, dtype=np.float64).ravel()
     lb = None if lengths_b is None else np.asarray(lengths_b.loc[idx].values, dtype=np.float64).ravel()
+    for values in (x, y):
+        if not np.isfinite(values).all() or (values < 0).any():
+            raise ValueError("Expression values must be finite and nonnegative.")
     keep = (x > 0) | (y > 0)
     x, y = x[keep], y[keep]
     if la is not None:
@@ -519,13 +538,24 @@ def correlate_pair(a, b, normalize="cpm", lengths_a=None, lengths_b=None):
     if n < 3:
         return None
     x, y = x[keep], y[keep]
-    lx = np.log2(x + 1.0)
-    ly = np.log2(y + 1.0)
+    lx = np.log2(y + 1.0)
+    ly = np.log2(x + 1.0)
+    if np.ptp(lx) == 0 or np.ptp(ly) == 0:
+        return None
+    return lx, ly
+
+
+def correlate_pair(a, b, normalize="cpm", lengths_a=None, lengths_b=None):
+    """Report correlations and the fit pseudo-bulk = slope * bulk + intercept."""
+    prepared = prepare_pair(a, b, normalize, lengths_a, lengths_b)
+    if prepared is None:
+        return None
+    lx, ly = prepared
     r, p_r = pearsonr(lx, ly)
     rho, p_s = spearmanr(lx, ly)
     slope, intercept, _, _, _ = linregress(lx, ly)
     return {
-        "n_genes_used": n,
+        "n_genes_used": int(lx.size),
         "pearson_r": float(r),
         "pearson_p": float(p_r),
         "spearman_rho": float(rho),
@@ -542,62 +572,45 @@ def make_figure(pseudo_df, bulk_group_expr, groups, pairs, out_png, out_pdf, out
     if n == 1:
         axes = [axes]
     im_for_cbar = None
+    density_norm = LogNorm(vmin=1, vmax=10)
+    density_max = 10
     for i, g in enumerate(groups):
         ax = axes[i]
         st = pairs[g]
-        idx = pseudo_df.index.intersection(bulk_group_expr[g].index)
-        x = np.asarray(bulk_group_expr[g].loc[idx].values, dtype=np.float64).ravel()
-        y = np.asarray(pseudo_df.loc[idx, g].values, dtype=np.float64).ravel()
-        la = None if lengths_b is None else np.asarray(lengths_b.loc[idx].values, dtype=np.float64).ravel()
-        lb = None if lengths_a is None else np.asarray(lengths_a.loc[idx].values, dtype=np.float64).ravel()
-        keep = (x > 0) & (y > 0)
-        x, y = x[keep], y[keep]
-        if la is not None:
-            la = la[keep]
-        if lb is not None:
-            lb = lb[keep]
-        x = normalize_values(x, normalize, la)
-        y = normalize_values(y, normalize, lb)
-        keep = (x > 0) & (y > 0)
-        x, y = x[keep], y[keep]
-        x = np.log2(x + 1.0)
-        y = np.log2(y + 1.0)
+        x, y = prepare_pair(pseudo_df[g], bulk_group_expr[g], normalize,
+                            lengths_a, lengths_b)
 
         H, xe, ye = np.histogram2d(x, y, bins=200)
         H = H.T
         H[H < 1] = 0
         extent = [xe[0], xe[-1], ye[0], ye[-1]]
-        vmax = max(10, H.max()) if H.max() > 0 else 10
-        im = ax.imshow(H, origin="lower", extent=extent, cmap="viridis",
-                       norm=LogNorm(vmin=1, vmax=vmax), aspect="auto")
+        density_max = max(density_max, H.max())
+        im = ax.imshow(H, origin="lower", extent=extent, cmap="Blues",
+                       norm=density_norm, aspect="auto")
         im_for_cbar = im
         lo, hi = min(x.min(), y.min()), max(x.max(), y.max())
         ax.plot([lo, hi], [lo, hi], linestyle="--", color="gray", linewidth=1)
         xx = np.linspace(lo, hi, 100)
-        ax.plot(xx, st["slope"] * xx + st["intercept"], color="blue", linewidth=1.5)
+        ax.plot(xx, st["slope"] * xx + st["intercept"], color="#345B7E", linewidth=1.2)
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
-        ax.set_xlabel("log2(Bulk RNA-seq expression + 1)")
-        ax.set_ylabel("log2(Pseudo-bulk scRNA-seq expression + 1)")
-        ax.set_title("Group %s (n=%d genes)" % (g, st["n_genes_used"]))
-        ax.text(0.02, 0.98,
-                "Pearson r = %.3f (p=%s)\nSpearman \u03c1 = %.3f (p=%s)\ny = %.3fx + %.3f"
-                % (st["pearson_r"], format_p(st["pearson_p"]),
-                   st["spearman_rho"], format_p(st["spearman_p"]),
-                   st["slope"], st["intercept"]),
-                transform=ax.transAxes, va="top", ha="left", fontsize=9,
-                bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+        ax.set_xlabel("log2(Bulk RNA-seq expression + 1)", fontsize=8)
+        ax.set_ylabel("log2(Pseudo-bulk scRNA-seq expression + 1)", fontsize=8)
+        ax.set_title("Group %s" % g, fontsize=10)
+        ax.tick_params(labelsize=8)
+    density_norm.vmax = density_max
     plt.subplots_adjust(right=0.9)
     if im_for_cbar is not None:
         cax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
         cb = fig.colorbar(im_for_cbar, cax=cax)
-        cb.set_label("Gene count")
+        cb.set_label("Gene count", fontsize=8)
+        cb.ax.tick_params(labelsize=8)
     # Deliberately no tight_layout(): the manually placed colorbar axes is not
-    # compatible with it, and calling it emitted a warning in the original.
+    # compatible with it.
     saved = []
     for path, fmt in ((out_png, "png"), (out_pdf, "pdf"), (out_svg, "svg")):
         try:
-            fig.savefig(path, dpi=300)
+            fig.savefig(path, dpi=300, bbox_inches="tight")
             saved.append(path)
             log("[DONE] Figure: %s" % path)
         except Exception as e:
@@ -635,6 +648,11 @@ def build_parser():
     sc.add_argument("--sc-meta-csv")
     sc.add_argument("--group-col", default="Group")
     sc.add_argument("--gene-id-key", default="auto")
+    source = sc.add_mutually_exclusive_group()
+    source.add_argument("--sc-layer", default=None,
+                        help="Use a named AnnData count layer; default prefers layers['counts'], then X.")
+    source.add_argument("--sc-use-raw", action="store_true",
+                        help="Explicitly read raw.X/raw.var, which must contain raw counts.")
 
     b = p.add_argument_group("bulk input")
     b.add_argument("--bulk-csv", required=True)
@@ -680,20 +698,27 @@ def main(argv=None):
         raise SystemExit("Provide exactly one of --sc-h5ad or --sc-matrix-csv.")
     if args.sc_matrix_csv and not args.sc_meta_csv:
         raise SystemExit("--sc-matrix-csv requires --sc-meta-csv.")
+    if args.sc_matrix_csv and (args.sc_layer is not None or args.sc_use_raw):
+        raise SystemExit("--sc-layer and --sc-use-raw require --sc-h5ad.")
     if args.gene_to_upper and args.gene_to_lower:
         raise SystemExit("Choose at most one of --gene-to-upper / --gene-to-lower.")
+    if (not args.out_prefix.strip() or args.out_prefix in (".", "..")
+            or any(ch in args.out_prefix for ch in "/\\:\x00")):
+        raise SystemExit("out-prefix must be a filename prefix without path separators.")
 
     os.makedirs(args.out_dir, exist_ok=True)
     started = datetime.now(timezone.utc).isoformat()
 
     # --- load single cell ---
     if args.sc_h5ad:
-        X, raw_ids, group_series, id_source, sc_lengths = load_scrna_from_h5ad(
-            args.sc_h5ad, args.group_col, args.gene_id_key, args.sc_lengths_col)
+        X, raw_ids, group_series, id_source, sc_lengths, matrix_source = load_scrna_from_h5ad(
+            args.sc_h5ad, args.group_col, args.gene_id_key, args.sc_lengths_col,
+            layer=args.sc_layer, use_raw=args.sc_use_raw)
     else:
         X, raw_ids, group_series, id_source = load_scrna_from_csv(
             args.sc_matrix_csv, args.sc_meta_csv, args.group_col)
         sc_lengths = None
+        matrix_source = "csv"
         if args.sc_lengths_col is not None:
             log("[WARN] --sc-lengths-col is only read from .h5ad var; ignored for the CSV path.")
 
@@ -705,6 +730,7 @@ def main(argv=None):
         to_upper=args.gene_to_upper, to_lower=args.gene_to_lower)
     if n_dup:
         log("[INFO] %d gene ID(s) became duplicates after normalization." % n_dup)
+    sc_lengths = collapse_gene_lengths(sc_lengths, gene_ids)
 
     pseudo_df, cell_counts = compute_pseudo_bulk(
         X, gene_ids, group_series, exclude_missing=not args.keep_missing_groups)
@@ -736,13 +762,14 @@ def main(argv=None):
         to_upper=args.gene_to_upper, to_lower=args.gene_to_lower)
     if bulk_dup:
         log("[WARN] %d duplicate bulk gene ID(s) after normalization; "
-            "first occurrence kept." % bulk_dup)
-    bulk_ids = pd.Index(bulk_ids)
-    bulk_df = bulk_df.loc[~bulk_ids.duplicated()].copy()
-    bulk_df.index = bulk_ids[~bulk_ids.duplicated()]
-    if bulk_lengths is not None:
-        bulk_lengths = bulk_lengths.loc[~bulk_ids.duplicated()]
-        bulk_lengths.index = bulk_ids[~bulk_ids.duplicated()]
+            "expression values will be summed." % bulk_dup)
+    bulk_lengths = collapse_gene_lengths(bulk_lengths, bulk_ids)
+    bulk_df = bulk_df.apply(pd.to_numeric, errors="raise")
+    bulk_values = bulk_df.to_numpy(dtype=np.float64)
+    if not np.isfinite(bulk_values).all() or (bulk_values < 0).any():
+        raise ValueError("Bulk expression must be finite and nonnegative.")
+    bulk_df.index = pd.Index(bulk_ids)
+    bulk_df = bulk_df.groupby(level=0, sort=False).sum()
 
     if args.normalize == "tpm" and (sc_lengths is None or bulk_lengths is None):
         raise SystemExit(
@@ -821,7 +848,8 @@ def main(argv=None):
             "n_groups": len(best),
         }
         log("[INFO] matched mean r=%.4f  mismatched mean r=%.4f  gap=%.4f"
-            % (discriminability["matched_mean_r"], discriminability["mismatched_mean_r"],
+            % (discriminability["matched_mean_r"] if matched else float("nan"),
+               discriminability["mismatched_mean_r"] if mismatched else float("nan"),
                gap if gap is not None else float("nan")))
         for pg, info in best.items():
             if not info["correct"]:
@@ -870,6 +898,7 @@ def main(argv=None):
             "group_col": args.group_col,
             "gene_id_key": args.gene_id_key,
             "gene_id_source_used": id_source,
+            "matrix_source_used": matrix_source,
         },
         "parameters": {
             "strip_version": bool(args.strip_version),
@@ -878,6 +907,10 @@ def main(argv=None):
             "discriminability": bool(args.discriminability),
             "keep_missing_groups": bool(args.keep_missing_groups),
             "normalize": args.normalize,
+            "sc_layer": args.sc_layer,
+            "sc_use_raw": bool(args.sc_use_raw),
+            "regression_x": "bulk",
+            "regression_y": "pseudo_bulk",
             "sc_lengths_col": args.sc_lengths_col,
             "bulk_lengths_col": args.bulk_lengths_col,
         },
@@ -892,6 +925,7 @@ def main(argv=None):
         "bulk": {
             "n_genes": int(bulk_df.shape[0]),
             "n_samples": int(bulk_df.shape[1]),
+            "n_gene_ids_collapsed": int(bulk_dup),
             "unmatched_samples": unmatched,
             "groups_without_bulk": missing_groups,
         },
@@ -934,6 +968,13 @@ def main(argv=None):
         result["warnings"].append(
             "%d gene ID(s) collapsed onto an existing ID after normalization; their "
             "pseudo-bulk values were summed." % n_dup)
+    if bulk_dup:
+        result["warnings"].append(
+            "%d duplicate bulk gene ID(s) were collapsed by summing expression." % bulk_dup)
+
+    manifest_path = None if args.no_manifest else os.path.join(
+        args.out_dir, args.out_prefix + "_manifest.json")
+    result["outputs"]["manifest_json"] = manifest_path
 
     # Write the results JSON before the manifest, so the manifest can hash it.
     if args.results_json:
@@ -944,8 +985,6 @@ def main(argv=None):
 
     # --- manifest: the one file a reader needs to reproduce this run ---
     if not args.no_manifest:
-        manifest_path = os.path.join(
-            args.out_dir, args.out_prefix + "_manifest.json")
         manifest = {
             "schema": "dsh.bulk-scrna-concordance.manifest/1",
             "produced_by": {
@@ -956,7 +995,7 @@ def main(argv=None):
             "generated_at_utc": started,
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
             "command": {
-                "argv": sys.argv[1:],
+                "argv": list(argv) if argv is not None else sys.argv[1:],
                 "normalize": args.normalize,
                 "group_col": args.group_col,
             },
@@ -988,7 +1027,6 @@ def main(argv=None):
             manifest["outputs"][os.path.basename(path)] = file_provenance(path)
         with open(manifest_path, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, ensure_ascii=False, indent=2)
-        result["outputs"]["manifest_json"] = manifest_path
         log("[DONE] Manifest: %s" % manifest_path)
 
     log("[OK] Analysis complete.")
@@ -1001,3 +1039,4 @@ if __name__ == "__main__":
     except Exception as exc:  # make failures machine-readable too
         log("[ERROR] %s: %s" % (type(exc).__name__, exc))
         sys.exit(1)
+
