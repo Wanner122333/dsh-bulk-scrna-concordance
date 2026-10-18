@@ -32,6 +32,12 @@ one to the largest occupied-bin count across all panels. If every bin has one
 gene, the scale uses two as a nondegenerate upper bound and labels only one.
 The solid blue line is the ordinary least-squares fit; the gray dashed line is
 `y=x`. Axis labels include the applied `log2(expression + 1)` transformation.
+Each panel displays its Pearson `r`, Spearman `ρ`, Pearson `p` and fitted
+equation `y = intercept + slope x` in the upper-left corner. These annotations
+reuse that group's statistics without recomputing them. Here `p` is the
+two-sided Pearson correlation p-value across retained genes. Values below
+`1e-300`, including numerical underflow to zero, display as `p < 1e-300`;
+other values display in scientific notation.
 
 This styling is used by the CLI, DSH and MCP routes and by all three figure
 formats (PNG, PDF and SVG). Output names, transformed values, correlation

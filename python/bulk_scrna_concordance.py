@@ -601,6 +601,18 @@ def make_figure(pseudo_df, bulk_group_expr, groups, pairs, out_png, out_pdf, out
         xx = np.linspace(0, hi, 100)
         ax.plot(xx, st["slope"] * xx + st["intercept"], color="#3D82B9",
                 linewidth=1.2, zorder=4)
+        p_value = format_p(st["pearson_p"])
+        p_label = ("p < " + p_value[1:] if p_value.startswith("<")
+                   else "p = " + p_value)
+        slope_sign = "+" if st["slope"] >= 0 else "-"
+        annotation = (
+            "Pearson r = %.3f; Spearman \u03c1 = %.3f; %s\n"
+            "y = %.3f %s %.3fx"
+            % (st["pearson_r"], st["spearman_rho"], p_label,
+               st["intercept"], slope_sign, abs(st["slope"]))
+        )
+        ax.text(0.035, 0.97, annotation, transform=ax.transAxes,
+                ha="left", va="top", fontsize=8, color="black", zorder=5)
         ax.set_xlim(0, hi)
         ax.set_ylim(0, hi)
         ax.set_aspect("equal", adjustable="box")

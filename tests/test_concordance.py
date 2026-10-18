@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -69,6 +70,41 @@ class StatisticsAndFigureTests(unittest.TestCase):
         self.assertEqual(stats["n_genes_used"], 4)
         self.assertAlmostEqual(stats["slope"], expected.slope)
         self.assertAlmostEqual(stats["intercept"], expected.intercept)
+
+    def test_panel_statistics_use_each_group_and_do_not_report_underflow_as_zero(self):
+        # Deliberately distinct supplied results expose swapped group labels,
+        # hard-coded example values, incorrect inequality and regression signs.
+        pseudo = pd.DataFrame({"A": [1, 4, 16, 64], "B": [2, 8, 32, 128]})
+        bulk = {"A": pd.Series([2, 4, 8, 32]), "B": pd.Series([4, 8, 16, 64])}
+        pairs = {
+            "A": {"pearson_r": .8754321, "spearman_rho": .7123456,
+                  "pearson_p": 0.0, "slope": 1.23456, "intercept": -.333333},
+            "B": {"pearson_r": -.6254321, "spearman_rho": -.4123456,
+                  "pearson_p": .025, "slope": -.5, "intercept": 1.25},
+        }
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            paths = [str(Path(directory) / ("annotations." + ext)) for ext in ("png", "pdf", "svg")]
+            with patch.object(c.plt, "close", wraps=c.plt.close) as close_spy:
+                c.make_figure(pseudo, bulk, ["A", "B"], pairs, *paths, normalize="none")
+            fig = close_spy.call_args.args[0]
+            labels = ["\n".join(t.get_text() for t in ax.texts) for ax in fig.axes[:2]]
+            for group, text in zip(("A", "B"), labels):
+                self.assertRegex(text, r"r\s*=\s*[-+0-9.]+", "Missing per-panel statistics")
+                r = float(re.search(r"r\s*=\s*([-+0-9.]+)", text).group(1))
+                rho = float(re.search(r"ρ\s*=\s*([-+0-9.]+)", text).group(1))
+                self.assertAlmostEqual(r, pairs[group]["pearson_r"], places=3)
+                self.assertAlmostEqual(rho, pairs[group]["spearman_rho"], places=3)
+                equation = re.search(r"y\s*=\s*([-+0-9.]+)\s*([+−-])\s*([0-9.]+)\s*x", text)
+                self.assertIsNotNone(equation, text)
+                intercept = float(equation.group(1))
+                slope = float(equation.group(3)) * (1 if equation.group(2) == "+" else -1)
+                self.assertAlmostEqual(intercept, pairs[group]["intercept"], places=3)
+                self.assertAlmostEqual(slope, pairs[group]["slope"], places=3)
+                self.assertNotIn("=<", text)
+            self.assertRegex(labels[0], r"p\s*<\s*1e-300")
+            finite_p = re.search(r"p\s*=\s*([0-9.e+-]+)", labels[1])
+            self.assertIsNotNone(finite_p)
+            self.assertAlmostEqual(float(finite_p.group(1)), .025)
 
     def test_hexbin_preserves_gene_counts_and_density_scale_across_groups(self):
         # Five coincident B genes must retain count 5; singleton A bins must
