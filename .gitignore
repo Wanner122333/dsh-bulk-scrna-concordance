@@ -24,3 +24,9 @@ npm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Downloaded/generated data from the documented examples.
+/results/
+
+# Curated, reviewed reference outputs published with the real-data example.
+!examples/gse77288/results/*

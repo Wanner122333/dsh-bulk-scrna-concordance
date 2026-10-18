@@ -41,6 +41,58 @@ requires `anndata` and `h5py`.
 python -m pip install -r requirements.txt
 ```
 
+## Real-data example: human iPSC (GSE77288)
+
+This example compares independently measured bulk and single-cell read counts
+from three donors in [Tung et al. (2017)](https://doi.org/10.1038/srep39921),
+available as [GSE77288](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE77288).
+It uses the authors' 564 QC-passing cells and eight matching bulk libraries.
+The QC list excludes all NA19098.r2 cells, so that batch's bulk library is also
+excluded. Both inputs use untransformed read counts; the 92 ERCC spike-in
+columns are removed.
+
+![Bulk and single-cell expression concordance in three real iPSC donors](examples/gse77288/results/GSE77288_real_bulk_scrna_correlation.png)
+
+| Donor | Cells | Bulk libraries | Genes used | Pearson r | Spearman ρ |
+|---|---:|---:|---:|---:|---:|
+| NA19098 | 142 | 2 | 15,844 | 0.966628 | 0.963411 |
+| NA19101 | 201 | 3 | 16,440 | 0.968652 | 0.967269 |
+| NA19239 | 221 | 3 | 16,247 | 0.972792 | 0.970065 |
+
+The figure uses default shared axes, hexagonal gene-density bins, a logarithmic
+gene-count colorbar, grid lines, regression lines and per-panel statistics.
+The reference run used analysis commit
+[`7478bde`](https://github.com/Wanner122333/dsh-bulk-scrna-concordance/commit/7478bdef898cdca66ba05b101f6a5cbfe239035e).
+Raw counts and the correlations/regressions were checked independently.
+
+[PDF](examples/gse77288/results/GSE77288_real_bulk_scrna_correlation.pdf) ·
+[SVG](examples/gse77288/results/GSE77288_real_bulk_scrna_correlation.svg) ·
+[Statistics CSV](examples/gse77288/results/GSE77288_real_bulk_scrna_correlation_stats.csv) ·
+[Cross-donor correlations](examples/gse77288/results/GSE77288_real_discriminability.csv) ·
+[Results, parameters and source hashes](examples/gse77288/reference_run.json)
+
+From the repository root, prepare the public inputs and run the same analysis:
+
+```bash
+python examples/gse77288/prepare.py --out-dir results/gse77288/input-data
+python python/bulk_scrna_concordance.py \
+  --sc-h5ad results/gse77288/input-data/sc_read_counts.h5ad \
+  --bulk-csv results/gse77288/input-data/bulk_read_counts.csv \
+  --group-col individual --gene-id-key var_names --discriminability \
+  --out-dir results/gse77288 --out-prefix GSE77288_real \
+  --results-json results/gse77288/GSE77288_real_results.json
+```
+
+The preparation script downloads about 13 MB of compressed counts plus sample
+annotations, verifies fixed SHA-256 hashes, and writes raw-count inputs and
+provenance. It reuses verified cached downloads on later runs. The underlying
+counts are downloaded from their public sources rather than bundled here.
+See the [example notes](examples/gse77288/README.md) for filtering, caching and
+the reference environment. All three donors are iPSCs: these gene-wise
+correlations describe expression agreement, not biological replicate inference
+or general classification accuracy. Pearson p-values underflow to zero in the
+statistics CSV and display as `p < 1e-300` in the figure.
+
 ## Command line
 
 Run the included synthetic fixture:

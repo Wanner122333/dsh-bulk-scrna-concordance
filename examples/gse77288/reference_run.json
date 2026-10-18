@@ -1,0 +1,287 @@
+{
+  "schema": "bulk-scrna-concordance.example/1",
+  "dataset": {
+    "accession": "GSE77288",
+    "title": "Human iPSC bulk and single-cell read counts",
+    "publication": "https://doi.org/10.1038/srep39921",
+    "author_workflow": "https://jdblischak.github.io/singleCellSeq/analysis/prepare-counts.html"
+  },
+  "reference_analysis_commit": "7478bdef898cdca66ba05b101f6a5cbfe239035e",
+  "analysis_script_sha256": "e33ed354a00bf815070225e3155e9da0c3721161ad83867a795b341a2f8bbf1c",
+  "reference_run_utc": "2026-10-18T01:40:45.356470+00:00",
+  "source_files": [
+    {
+      "filename": "GSE77288_reads-raw-single-per-sample.txt.gz",
+      "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE77nnn/GSE77288/suppl/GSE77288_reads-raw-single-per-sample.txt.gz",
+      "bytes": 13025232,
+      "sha256": "90e6c5f93bc0e33ffd4fba84f9d5f6f2f7f234eef3a241ef629915121c4cb0c8"
+    },
+    {
+      "filename": "GSE77288_reads-raw-bulk-per-sample.txt.gz",
+      "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE77nnn/GSE77288/suppl/GSE77288_reads-raw-bulk-per-sample.txt.gz",
+      "bytes": 330833,
+      "sha256": "6e2a1a0bc59dd3159a43963bd916cbe68da921147f44c855fda1dbb2206dc787"
+    },
+    {
+      "filename": "annotation-filter.txt",
+      "url": "https://raw.githubusercontent.com/jdblischak/singleCellSeq/master/data/annotation-filter.txt",
+      "bytes": 23166,
+      "sha256": "0a50191f9adf7be7d80f6ebbc472c774fae473b5aa471a59d09153d205b8d409"
+    },
+    {
+      "filename": "annotation-bulk.txt",
+      "url": "https://raw.githubusercontent.com/jdblischak/singleCellSeq/master/data/annotation-bulk.txt",
+      "bytes": 429,
+      "sha256": "40e9048a1dc7b92c874f433dba69026e74216f6e5169f387ea78897835c744f4"
+    }
+  ],
+  "preparation": {
+    "study": "Tung et al. 2017 / GSE77288; human iPSC",
+    "raw_single_cells": 864,
+    "author_qc_single_cells": 564,
+    "excluded_single_cells": 300,
+    "raw_bulk_libraries": 9,
+    "matched_bulk_libraries": 8,
+    "excluded_bulk_libraries": [
+      "NA19098.r2.bulk"
+    ],
+    "genes_before_expression_filter": 20327,
+    "excluded_ERCC_columns": {
+      "single_cell": 92,
+      "bulk": 92
+    },
+    "single_cells_by_donor": {
+      "NA19098": 142,
+      "NA19101": 201,
+      "NA19239": 221
+    },
+    "bulk_libraries_by_donor": {
+      "NA19098": 2,
+      "NA19101": 3,
+      "NA19239": 3
+    },
+    "single_cells_by_batch": {
+      "NA19098.r1": 85,
+      "NA19098.r3": 57,
+      "NA19101.r1": 80,
+      "NA19101.r2": 70,
+      "NA19101.r3": 51,
+      "NA19239.r1": 74,
+      "NA19239.r2": 68,
+      "NA19239.r3": 79
+    },
+    "sc_matrix_source": "AnnData.X raw integer read counts (cells x genes)",
+    "bulk_matrix_source": "independently measured bulk raw read counts (genes x samples)",
+    "preparation": "Author fixed QC list; exclude ERCC; align 8 measured batches; no CPM, log, imputation, or gene selection before tool execution.",
+    "analysis": "Donor-level sc sum and bulk raw-count mean, then default CPM over pairwise shared genes positive on either side; retain both-positive and log2(CPM+1).",
+    "interpretation": "Three donors of the same iPSC cell type. Gene-wise correlations are descriptive, not donor-level replicate tests or cell-type discrimination."
+  },
+  "environment_lock": {
+    "python": "3.13.7",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "seed": 42,
+    "numpy": "2.2.6",
+    "pandas": "2.3.2",
+    "scipy": "1.16.1",
+    "anndata": "0.12.2",
+    "h5py": "3.14.0",
+    "matplotlib": "3.10.6"
+  },
+  "parameters": {
+    "strip_version": false,
+    "gene_to_upper": false,
+    "gene_to_lower": false,
+    "discriminability": true,
+    "keep_missing_groups": false,
+    "normalize": "cpm",
+    "sc_layer": null,
+    "sc_use_raw": false,
+    "regression_x": "bulk",
+    "regression_y": "pseudo_bulk",
+    "sc_lengths_col": null,
+    "bulk_lengths_col": null
+  },
+  "scrna": {
+    "n_cells": 564,
+    "n_genes_raw": 20327,
+    "n_genes_unique": 20327,
+    "n_gene_ids_collapsed": 0,
+    "groups": [
+      "NA19098",
+      "NA19101",
+      "NA19239"
+    ],
+    "cells_per_group": {
+      "NA19098": 142,
+      "NA19101": 201,
+      "NA19239": 221
+    }
+  },
+  "bulk": {
+    "n_genes": 20327,
+    "n_samples": 8,
+    "n_gene_ids_collapsed": 0,
+    "unmatched_samples": [],
+    "groups_without_bulk": []
+  },
+  "pairs": {
+    "NA19098": {
+      "n_genes_used": 15844,
+      "pearson_r": 0.9666276355230301,
+      "pearson_p": 0.0,
+      "spearman_rho": 0.963410945751741,
+      "spearman_p": 0.0,
+      "slope": 0.9597692094817687,
+      "intercept": 0.13519999588552656,
+      "n_overlap_genes": 20327,
+      "n_cells": 142,
+      "bulk_samples": [
+        "NA19098.r1.bulk",
+        "NA19098.r3.bulk"
+      ]
+    },
+    "NA19101": {
+      "n_genes_used": 16440,
+      "pearson_r": 0.9686519644865099,
+      "pearson_p": 0.0,
+      "spearman_rho": 0.9672688221574622,
+      "spearman_p": 0.0,
+      "slope": 0.9658572970935393,
+      "intercept": 0.2715849297674606,
+      "n_overlap_genes": 20327,
+      "n_cells": 201,
+      "bulk_samples": [
+        "NA19101.r1.bulk",
+        "NA19101.r2.bulk",
+        "NA19101.r3.bulk"
+      ]
+    },
+    "NA19239": {
+      "n_genes_used": 16247,
+      "pearson_r": 0.9727923535328975,
+      "pearson_p": 0.0,
+      "spearman_rho": 0.970064876711599,
+      "spearman_p": 0.0,
+      "slope": 0.9670264810833678,
+      "intercept": 0.19594067089366618,
+      "n_overlap_genes": 20327,
+      "n_cells": 221,
+      "bulk_samples": [
+        "NA19239.r1.bulk",
+        "NA19239.r2.bulk",
+        "NA19239.r3.bulk"
+      ]
+    }
+  },
+  "discriminability": {
+    "matrix": {
+      "NA19098": {
+        "NA19098": {
+          "pearson_r": 0.9666276355230301,
+          "spearman_rho": 0.963410945751741
+        },
+        "NA19101": {
+          "pearson_r": 0.9585376505338717,
+          "spearman_rho": 0.9558534209991736
+        },
+        "NA19239": {
+          "pearson_r": 0.9502579046570565,
+          "spearman_rho": 0.9466256232383297
+        }
+      },
+      "NA19101": {
+        "NA19098": {
+          "pearson_r": 0.9665109345605789,
+          "spearman_rho": 0.9630004277206473
+        },
+        "NA19101": {
+          "pearson_r": 0.9686519644865099,
+          "spearman_rho": 0.9672688221574622
+        },
+        "NA19239": {
+          "pearson_r": 0.9576584308612335,
+          "spearman_rho": 0.9547299581247846
+        }
+      },
+      "NA19239": {
+        "NA19098": {
+          "pearson_r": 0.966739838719807,
+          "spearman_rho": 0.9622739237288103
+        },
+        "NA19101": {
+          "pearson_r": 0.9656076113600498,
+          "spearman_rho": 0.9621715798469049
+        },
+        "NA19239": {
+          "pearson_r": 0.9727923535328975,
+          "spearman_rho": 0.970064876711599
+        }
+      }
+    },
+    "matched_mean_r": 0.9693573178474791,
+    "mismatched_mean_r": 0.9608853951154329,
+    "gap": 0.008471922732046222,
+    "best_match": {
+      "NA19098": {
+        "best_bulk_group": "NA19098",
+        "best_r": 0.9666276355230301,
+        "correct": true
+      },
+      "NA19101": {
+        "best_bulk_group": "NA19101",
+        "best_r": 0.9686519644865099,
+        "correct": true
+      },
+      "NA19239": {
+        "best_bulk_group": "NA19239",
+        "best_r": 0.9727923535328975,
+        "correct": true
+      }
+    },
+    "n_correct": 3,
+    "n_groups": 3
+  },
+  "warnings": [],
+  "independent_audit": {
+    "status": "PASS",
+    "all_raw_count_entries_checked": true,
+    "independent_of_published_code": true,
+    "correlation_regression_comparison_tolerance": 1e-12,
+    "maximum_absolute_error": 2.6645352591003757e-15,
+    "p_values_independently_recomputed": false,
+    "source_sha256_note": "Compared with the recorded downloaded files; no official GEO checksum was obtained."
+  },
+  "artifacts": [
+    {
+      "path": "results/GSE77288_real_bulk_scrna_correlation.png",
+      "bytes": 621244,
+      "sha256": "213482fd5375db83dff4f4b5d5e369ca399e3cc0226ec8a5c40364abab08b0f5"
+    },
+    {
+      "path": "results/GSE77288_real_bulk_scrna_correlation.pdf",
+      "bytes": 39556,
+      "sha256": "775b815e8df74832cad68ea966158f5a46a69c3641c8cec27019a044b9ae0dba"
+    },
+    {
+      "path": "results/GSE77288_real_bulk_scrna_correlation.svg",
+      "bytes": 513949,
+      "sha256": "31fa02327fc01fef856c4b443fa1b89f1430928630c04efc33ce332fe0618720"
+    },
+    {
+      "path": "results/GSE77288_real_bulk_scrna_correlation_stats.csv",
+      "bytes": 572,
+      "sha256": "f36eaf01c0102280eda78b2cba58aa658364cf427803168c3083cd2f2aefa1c2"
+    },
+    {
+      "path": "results/GSE77288_real_discriminability.csv",
+      "bytes": 223,
+      "sha256": "312cc8d03a3007ba975f1442fcb993d8cc8d0d165a04ffe7eacbc54207b1663a"
+    }
+  ],
+  "notes": [
+    "This is a portable reference summary, not an unmodified runtime manifest. Artifact paths are relative to this file.",
+    "Figures and CSV files are byte-for-byte copies of the reference run.",
+    "Raw counts are not bundled; prepare.py downloads and verifies source files.",
+    "Integer zero p-values reflect numerical underflow; display as p < 1e-300."
+  ]
+}
